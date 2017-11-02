@@ -1,6 +1,14 @@
 # Rigol1000z
-Python USB library to control Rigol DS1000z oscilloscopes.
+Python library to control Rigol DS1000z oscilloscopes based on USB.
 
+Tested on Arch Linux and Linux Mint using a Rigol DS1054Z.
+
+## Dependencies
+* [numpy](https://github.com/numpy/numpy)
+* [python-usbtmc](https://github.com/python-ivi/python-usbtmc)
+* [tqdm](https://github.com/tqdm/tqdm)
+
+## Example
 ```python
 import rigol1000z
 
