@@ -142,7 +142,6 @@ class _Rigol1000zChannel:
         self._osc._write(':wav:form byte')
 
         info = self.get_data_premable()
-        print(info)
 
         max_num_pts = 250000
         num_blocks = info['points'] // max_num_pts
