@@ -152,12 +152,11 @@ class _Rigol1000zChannel:
             if i < num_blocks:
                 self._osc._write(':wav:star %i' % (1+i*250000))
                 self._osc._write(':wav:stop %i' % (250000*(i+1)))
+            elif last_block_pts:
+                self._osc._write(':wav:star %i' % (1+num_blocks*250000))
+                self._osc._write(':wav:stop %i' % (num_blocks*250000+last_block_pts))
             else:
-                if last_block_pts:
-                    self._osc._write(':wav:star %i' % (1+num_blocks*250000))
-                    self._osc._write(':wav:stop %i' % (num_blocks*250000+last_block_pts))
-                else:
-                    break
+                break
             data = self._osc._ask_raw(':wav:data?')[11:]
             data = np.frombuffer(data, 'B')
             datas.append(data)
