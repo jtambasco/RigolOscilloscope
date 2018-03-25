@@ -3,22 +3,23 @@ import usbtmc
 import os
 import numpy as np
 import tqdm
+from usb_usbtmc_info import usbtmc_info
 
 class _Usbtmc:
     """
     Simple usbmtc device
     """
 
-    def __init__(self, usb_vendor, usb_product):
-        self.file = usbtmc.Instrument(usb_vendor, usb_product)
+    def __init__(self, vid, pid):
+        self.file = usbtmc.Instrument(vid, pid)
 
     def _write(self, cmd):
         ret = self.file.write(cmd)
-        time.sleep(0.2)
+        time.sleep(0.3)
         return ret
 
     def _read(self, num_bytes=-1):
-        return self.file.read(num_bytes)
+        return self.file.read(num_bytes).strip()
 
     def _read_raw(self, num_bytes=-1):
         return self.file.read_raw(num_bytes)
@@ -31,16 +32,16 @@ class _Usbtmc:
         self._write(cmd)
         return self._read_raw(num_bytes)
 
-class _Rigol1000zChannel:
+class _Rigol1054zChannel:
     def __init__(self, channel, osc):
         self._channel = channel
         self._osc = osc
 
     def _write(self, cmd):
-        return self._osc.write(':chan%i%s' % (self._channel, cmd))
+        return self._osc._write(':chan%i%s' % (self._channel, cmd))
 
     def _read(self):
-        return self._osc.read()
+        return self._osc._read()
 
     def _ask(self, cmd):
         self._write(cmd)
@@ -95,9 +96,9 @@ class _Rigol1000zChannel:
         self._write(':rang %.4e' % range)
         return self.get_range_V()
 
-    def set_vertical_scale_V_div(self, scale):
+    def set_vertical_scale_V(self, scale):
         assert 1e-3 <= scale <= 100
-        return self._write(':scal %.4e' % scale)
+        self._write(':scal %.4e' % scale)
 
     def get_probe_ratio(self):
         return float(self._ask(':prob?'))
@@ -114,10 +115,11 @@ class _Rigol1000zChannel:
     def set_units(self, unit):
         unit = unit.lower()
         assert unit in ('volt', 'watt', 'amp', 'unkn')
-        return self._write(':unit %s' % unit)
+        self._write(':unit %s' % unit)
 
     def get_data_premable(self):
         pre = self._osc._ask(':wav:pre?').split(',')
+        print(pre)
         pre_dict = {
             'format': int(pre[0]),
             'type': int(pre[1]),
@@ -152,11 +154,12 @@ class _Rigol1000zChannel:
             if i < num_blocks:
                 self._osc._write(':wav:star %i' % (1+i*250000))
                 self._osc._write(':wav:stop %i' % (250000*(i+1)))
-            elif last_block_pts:
-                self._osc._write(':wav:star %i' % (1+num_blocks*250000))
-                self._osc._write(':wav:stop %i' % (num_blocks*250000+last_block_pts))
             else:
-                break
+                if last_block_pts:
+                    self._osc._write(':wav:star %i' % (1+num_blocks*250000))
+                    self._osc._write(':wav:stop %i' % (num_blocks*250000+last_block_pts))
+                else:
+                    break
             data = self._osc._ask_raw(':wav:data?')[11:]
             data = np.frombuffer(data, 'B')
             datas.append(data)
@@ -164,27 +167,21 @@ class _Rigol1000zChannel:
         datas = np.concatenate(datas)
         v = (datas - info['yorigin'] - info['yreference']) * info['yincrement']
 
-        t = np.linspace(0, 1, info['points'])
-        t = t * info['xincrement'] * 12 + info['xorigin'] + info['xreference']
+        t = np.arange(0, info['points']*info['xincrement'], info['xincrement'])
+        # info['xorigin'] + info['xreference']
 
         if filename:
             try:
                 os.remove(filename)
             except OSError:
                 pass
-            np.savetxt(filename, np.c_[t, v], '%.3e', ',')
+            np.savetxt(filename, np.c_[t, v], '%.12e', ',')
 
         return t, v
 
-class _Rigol1000zTrigger:
+class _Rigol1054zTrigger:
     def __init__(self, osc):
         self._osc = osc
-
-    def force(self):
-        self._osc._write(':tfor')
-
-    def set_single_shot(self):
-        self._osc._write(':sing')
 
     def get_trigger_level_V(self):
         return self._osc._ask(':trig:edg:lev?')
@@ -200,7 +197,7 @@ class _Rigol1000zTrigger:
         self._osc._write(':trig:hold %.3e' % holdoff)
         return self.get_trigger_holdoff_s()
 
-class _Rigol1000zTimebase:
+class _Rigol1054zTimebase:
     def __init__(self, osc):
         self._osc = osc
 
@@ -218,10 +215,10 @@ class _Rigol1000zTimebase:
     def get_timebase_scale_s_div(self):
         return float(self._ask(':scal?'))
 
-    def set_timebase_scale_s_div(self):
+    def set_timebase_scale_s_div(self, timebase):
         assert 50e-9 <= timebase <= 50
         self._write(':scal %.4e' % timebase)
-        return self.get_timebase_scale()
+        return self.get_timebase_scale_s_div()
 
     def get_timebase_mode(self):
         return self._ask(':mode?')
@@ -236,15 +233,28 @@ class _Rigol1000zTimebase:
         return self._ask(':offs?')
 
     def set_timebase_offset_s(self, offset):
-        self._write(':offs %.4e' % offset)
+        self._write(':offs %.4e' % -offset)
         return self.get_timebase_offset_s()
 
-class Rigol1000z(_Usbtmc):
-    def __init__(self, usb_vendor=0x1ab1, usb_product=0x04ce):
-        _Usbtmc.__init__(self, usb_vendor, usb_product)
-        self._channels = [_Rigol1000zChannel(c, self) for c in range(1,5)]
-        self.trigger = _Rigol1000zTrigger(self)
-        self.timebase = _Rigol1000zTimebase(self)
+class Rigol1054z(_Usbtmc):
+    def __init__(self):
+        # If the device is rebooted, the python-usbtmc driver won't work.
+        # Somehow, by sending any command using the kernel driver, then
+        # python-usbtmc works with this scope.  The following searches
+        # the usbtmc numbers and finds the corresponding usb pid, vid
+        # and serial, and then issues a command via the kernel driver.
+        rigol_vid = '0x1ab1'
+        rigol_pid = '0x04ce'
+        usb_id_usbtmc = usbtmc_info()
+        for dev in usb_id_usbtmc:
+            if dev[0] == rigol_vid and dev[1] == rigol_pid:
+                os.system('echo *IDN? >> /dev/%s' % dev[3])
+
+        _Usbtmc.__init__(self, int(rigol_vid, 16), int(rigol_pid, 16))
+
+        self._channels = [_Rigol1054zChannel(c, self) for c in range(1,5)]
+        self.trigger = _Rigol1054zTrigger(self)
+        self.timebase = _Rigol1054zTimebase(self)
 
     def __getitem__(self, i):
         assert 1 <= i <= 4, 'Not a valid channel.'
@@ -265,6 +275,12 @@ class Rigol1000z(_Usbtmc):
     def stop(self):
         self._write(':stop')
 
+    def force(self):
+        self._write(':tfor')
+
+    def set_single_shot(self):
+        self._write(':sing')
+
     def get_id(self):
         return self._ask('*IDN?')
 
@@ -277,19 +293,19 @@ class Rigol1000z(_Usbtmc):
         return self.get_averaging()
 
     def set_averaging_mode(self):
-        self._write(':acq:typ: aver')
+        self._write(':acq:type aver')
         return self.get_mode()
 
     def set_normal_mode(self):
-        self._write(':acq:typ: norm')
+        self._write(':acq:type norm')
         return self.get_mode()
 
     def set_high_resolution_mode(self):
-        self._write(':acq:typ: hres')
+        self._write(':acq:type hres')
         return self.get_mode()
 
     def set_peak_mode(self):
-        self._write(':acq:typ: peak')
+        self._write(':acq:type peak')
         return self.get_mode()
 
     def get_mode(self):
@@ -307,11 +323,30 @@ class Rigol1000z(_Usbtmc):
     def get_memory_depth(self):
         md = self._ask(':acq:mdep?')
         if md != 'AUTO':
-           md = float(md)
+           md = int(md)
         return md
 
     def set_memory_depth(self, pts):
-        return self._write(':acq:mdep %i' % pts)
+        num_enabled_chans = sum(self.get_channels_enabled())
+        if pts != 'AUTO':
+            pts = int(pts)
+
+        if num_enabled_chans == 1:
+            assert pts in ('AUTO', 12000, 120000, 1200000, 12000000, 24000000)
+        elif num_enabled_chans == 2:
+            assert pts in ('AUTO', 6000, 60000, 600000, 6000000, 12000000)
+        elif num_enabled_chans in (3, 4):
+            assert pts in ('AUTO', 3000, 30000, 300000, 3000000, 6000000)
+
+        self.run()
+        if pts == 'AUTO':
+            r = self._write(':acq:mdep AUTO')
+        else:
+            r = self._write(':acq:mdep %s' % pts)
+        return r
+
+    def get_channels_enabled(self):
+        return [c.enabled() for c in self._channels]
 
     def selected_channel(self):
         return self._ask(':MEAS:SOUR?')
