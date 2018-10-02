@@ -118,8 +118,13 @@ class _Rigol1054zChannel:
         self._write(':unit %s' % unit)
 
     def get_data_premable(self):
+        '''
+        Get information about oscilloscope axes.
+
+        Returns:
+            dict: A dictionary containing general oscilloscope axes information.
+        '''
         pre = self._osc._ask(':wav:pre?').split(',')
-        print(pre)
         pre_dict = {
             'format': int(pre[0]),
             'type': int(pre[1]),
@@ -135,7 +140,22 @@ class _Rigol1054zChannel:
         return pre_dict
 
     def get_data(self, mode='norm', filename=None):
-        assert mode in ('norm', 'max', 'raw')
+        '''
+        Download the captured voltage points from the oscilloscope.
+
+        Args:
+            mode (str): 'norm' if only the points on the screen should be
+                downloaded, and 'raw' if all the points the ADC has captured
+                should be downloaded.  Default is 'norm'.
+            filename (None, str): Filename the data should be saved to.  Default
+                is `None`; the data is not saved to a file.
+
+        Returns:
+            2-tuple: A tuple of two lists.  The first list is the time values
+                and the second list is the voltage values.
+
+        '''
+        assert mode in ('norm', 'raw')
 
         # Setup scope
         self._osc._write(':stop')
@@ -237,6 +257,19 @@ class _Rigol1054zTimebase:
         return self.get_timebase_offset_s()
 
 class Rigol1054z(_Usbtmc):
+    '''
+    Rigol 1000z USB driver.
+
+    Channels 1 through 4 (or 2 depending on the oscilloscope model) are accessed
+    using `[channel_number]`.  e.g. osc[2] for channel 2.  Channel 1 corresponds
+    to index 1 (not 0).
+
+    Attributes:
+        trigger (`_Rigol1054zTrigger`): Trigger object containing functions
+            related to the oscilloscope trigger.
+        timebase (`_Rigol1054zTimebase`): Timebase object containing functions
+            related to the oscilloscope timebase.
+    '''
     def __init__(self):
         # If the device is rebooted, the python-usbtmc driver won't work.
         # Somehow, by sending any command using the kernel driver, then
@@ -352,6 +385,17 @@ class Rigol1054z(_Usbtmc):
         return self._ask(':MEAS:SOUR?')
 
     def get_screenshot(self, filename, type='png'):
+        '''
+        Downloads a screenshot from the oscilloscope.
+
+        Args:
+            filename (str): The name of the image file.  The appropriate
+                extension should be included (i.e. jpg, png, bmp or tif).
+            type (str): The format image that should be downloaded.  Options
+                are 'jpeg, 'png', 'bmp8', 'bmp24' and 'tiff'.  It appears that
+                'jpeg' takes <3sec to download while all the other formats take
+                <0.5sec.  Default is 'png'.
+        '''
         self.file.timeout = 0
         self._write(':disp:data? on,off,%s' % type)
 
