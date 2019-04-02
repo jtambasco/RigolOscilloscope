@@ -1,7 +1,7 @@
-# Rigol1000z
+# Rigol 1000z and 2000a drivers
 Python library to control Rigol DS1000z oscilloscopes based on USB.
 
-Tested on Arch Linux and Linux Mint using a Rigol DS1054Z.
+Tested on Arch Linux and Linux Mint using a Rigol DS1054Z and Rigol DS2072A.
 
 ## Dependencies
 * [numpy](https://github.com/numpy/numpy)

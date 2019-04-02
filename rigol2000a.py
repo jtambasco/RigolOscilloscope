@@ -1,38 +1,73 @@
 import time
-import usbtmc
 import os
 import numpy as np
 import tqdm
 from usb_usbtmc_info import usbtmc_info
 
-class _Usbtmc:
-    """
-    Simple usbmtc device
-    """
+class _Usbtmc(object):
+    '''
+    Basic read/write interface to USBTMC _devices.
 
-    def __init__(self, vid, pid):
-        self.file = usbtmc.Instrument(vid, pid)
+    The PM100USB is USBTMC complant, so this class
+    allows low level communication to it.
 
-    def _write(self, cmd):
-        ret = self.file.write(cmd)
-        time.sleep(0.3)
-        return ret
+    Args:
+        usbtmc_dev_number (int): USBTMC device number the
+            power meter is.
+    '''
+    def __init__(self, usbtmc_dev_number):
+        usbtmc = '/dev/usbtmc' + str(usbtmc_dev_number)
+        self._dev = os.open(usbtmc, os.O_RDWR)
 
-    def _read(self, num_bytes=-1):
-        return self.file.read(num_bytes).strip()
+    def _write(self, command):
+        '''
+        Send a string to the USBTMC device.
 
-    def _read_raw(self, num_bytes=-1):
-        return self.file.read_raw(num_bytes)
+        Args:
+            command (str): String to send.
+        '''
+        os.write(self._dev, str.encode(command))
 
-    def _ask(self, cmd, num_bytes=-1):
-        self._write(cmd)
-        return self._read(num_bytes)
+    def _read(self, number_of_characters=100):
+        '''
+        Read a string from the USBTMC device.
 
-    def _ask_raw(self, cmd, num_bytes=-1):
-        self._write(cmd)
-        return self._read_raw(num_bytes)
+        Args:
+            number_of_characters (int): Maximum number of
+                characters to read.
 
-class _Rigol1054zChannel:
+        Returns:
+            str: Response from the USBTMC device.
+        '''
+        resp = os.read(self._dev, number_of_characters).decode().strip()
+        return resp
+
+    def _read_raw(self, number_of_characters=100):
+        resp = os.read(self._dev, number_of_characters)
+        return resp
+
+    def _ask(self, command, number_of_characters=100):
+        '''
+        Write to, and then read from the USBTMC device.
+
+        Args:
+            command (str): String to send.
+            number_of_characters (int): Maximum number of
+                characters to read.
+
+        Returns:
+            str: Response from the USBTMC device.
+        '''
+        self._write(command)
+        resp = self._read(number_of_characters)
+        return resp
+
+    def _ask_raw(self, command, number_of_characters=100):
+        self._write(command)
+        resp = self._read_raw(number_of_characters)
+        return resp
+
+class _Rigol2072aChannel:
     def __init__(self, channel, osc):
         self._channel = channel
         self._osc = osc
@@ -49,7 +84,9 @@ class _Rigol1054zChannel:
         return r
 
     def get_voltage_rms_V(self):
-        return self._osc.ask(':MEAS:ITEM? VRMS,CHAN%i' % self._channel)
+        channel = int(channel)
+        assert 1 <= channel <= 4, 'Invalid channel.'
+        return self._osc.ask(':MEAS:ITEM? VRMS,CHAN%i' % channel)
 
     def select_channel(self):
         self._osc.write(':MEAS:SOUR CHAN%i' % self._channel)
@@ -116,12 +153,6 @@ class _Rigol1054zChannel:
         self._write(':unit %s' % unit)
 
     def get_data_premable(self):
-        '''
-        Get information about oscilloscope axes.
-
-        Returns:
-            dict: A dictionary containing general oscilloscope axes information.
-        '''
         pre = self._osc._ask(':wav:pre?').split(',')
         pre_dict = {
             'format': int(pre[0]),
@@ -138,54 +169,45 @@ class _Rigol1054zChannel:
         return pre_dict
 
     def get_data(self, mode='norm', filename=None):
-        '''
-        Download the captured voltage points from the oscilloscope.
-
-        Args:
-            mode (str): 'norm' if only the points on the screen should be
-                downloaded, and 'raw' if all the points the ADC has captured
-                should be downloaded.  Default is 'norm'.
-            filename (None, str): Filename the data should be saved to.  Default
-                is `None`; the data is not saved to a file.
-
-        Returns:
-            2-tuple: A tuple of two lists.  The first list is the time values
-                and the second list is the voltage values.
-
-        '''
         assert mode in ('norm', 'raw')
 
         # Setup scope
-        self._osc._write(':stop')
         self._osc._write(':wav:sour chan%i' % self._channel)
         self._osc._write(':wav:mode %s' % mode)
         self._osc._write(':wav:form byte')
 
         info = self.get_data_premable()
 
-        max_num_pts = 250000
-        num_blocks = info['points'] // max_num_pts
-        last_block_pts = info['points'] % max_num_pts
+        if mode == 'raw':
+            self._osc._write(':stop')
+            max_num_pts = 1800000 # Reading more than this results in the 5sec USBTMC kernel driver.
+            num_blocks = info['points'] // max_num_pts
+            last_block_pts = info['points'] % max_num_pts
 
-        datas = []
-        for i in tqdm.tqdm(range(num_blocks+1), ncols=60):
-            if i < num_blocks:
-                self._osc._write(':wav:star %i' % (1+i*250000))
-                self._osc._write(':wav:stop %i' % (250000*(i+1)))
-            else:
-                if last_block_pts:
-                    self._osc._write(':wav:star %i' % (1+num_blocks*250000))
-                    self._osc._write(':wav:stop %i' % (num_blocks*250000+last_block_pts))
+            datas = []
+            for i in tqdm.tqdm(range(num_blocks+1), ncols=60):
+                if i < num_blocks:
+                    self._osc._write(':wav:star %i' % (1+i*max_num_pts))
+                    self._osc._write(':wav:stop %i' % (max_num_pts*(i+1)))
                 else:
-                    break
-            data = self._osc._ask_raw(':wav:data?')[11:]
-            data = np.frombuffer(data, 'B')
-            datas.append(data)
+                    if last_block_pts:
+                        self._osc._write(':wav:star %i' % (1+num_blocks*max_num_pts))
+                        self._osc._write(':wav:stop %i' % (num_blocks*max_num_pts+last_block_pts))
+                    else:
+                        break
+                data = self._osc._ask_raw(':wav:data?', max_num_pts+10000)[11:]
+                data = np.frombuffer(data, 'B')
+                datas.append(data)
+            datas = np.concatenate(datas)
+        elif mode == 'norm':
+            self._osc._write(':wav:star 1')
+            self._osc._write(':wav:stop 1400')
+            data = self._osc._ask_raw(':wav:data?', 1500)
+            datas = np.frombuffer(data, 'B')
 
-        datas = np.concatenate(datas)
         v = (datas - info['yorigin'] - info['yreference']) * info['yincrement']
 
-        t = np.arange(0, info['points']*info['xincrement'], info['xincrement'])
+        t = np.linspace(0, info['points']*info['xincrement'], v.size)
         # info['xorigin'] + info['xreference']
 
         if filename:
@@ -197,7 +219,7 @@ class _Rigol1054zChannel:
 
         return t, v
 
-class _Rigol1054zTrigger:
+class _Rigol2072aTrigger:
     def __init__(self, osc):
         self._osc = osc
 
@@ -215,7 +237,7 @@ class _Rigol1054zTrigger:
         self._osc._write(':trig:hold %.3e' % holdoff)
         return self.get_trigger_holdoff_s()
 
-class _Rigol1054zTimebase:
+class _Rigol2072aTimebase:
     def __init__(self, osc):
         self._osc = osc
 
@@ -245,7 +267,7 @@ class _Rigol1054zTimebase:
         mode = mode.lower()
         assert mode in ('main', 'xy', 'roll')
         self._write(':mode %s' % mode)
-        return get_timebase_mode()
+        return get_timebase_scale()
 
     def get_timebase_offset_s(self):
         return self._ask(':offs?')
@@ -254,38 +276,21 @@ class _Rigol1054zTimebase:
         self._write(':offs %.4e' % -offset)
         return self.get_timebase_offset_s()
 
-class Rigol1054z(_Usbtmc):
-    '''
-    Rigol 1000z USB driver.
-
-    Channels 1 through 4 (or 2 depending on the oscilloscope model) are accessed
-    using `[channel_number]`.  e.g. osc[2] for channel 2.  Channel 1 corresponds
-    to index 1 (not 0).
-
-    Attributes:
-        trigger (`_Rigol1054zTrigger`): Trigger object containing functions
-            related to the oscilloscope trigger.
-        timebase (`_Rigol1054zTimebase`): Timebase object containing functions
-            related to the oscilloscope timebase.
-    '''
+class Rigol2072a(_Usbtmc):
     def __init__(self):
-        # If the device is rebooted, the python-usbtmc driver won't work.
-        # Somehow, by sending any command using the kernel driver, then
-        # python-usbtmc works with this scope.  The following searches
-        # the usbtmc numbers and finds the corresponding usb pid, vid
-        # and serial, and then issues a command via the kernel driver.
         rigol_vid = '0x1ab1'
-        rigol_pid = '0x04ce'
+        rigol_pid = '0x04b0'
         usb_id_usbtmc = usbtmc_info()
         for dev in usb_id_usbtmc:
             if dev[0] == rigol_vid and dev[1] == rigol_pid:
-                os.system('echo *IDN? >> /dev/%s' % dev[3])
+                usbtmc_num = dev[3][-1]
+                break
 
-        _Usbtmc.__init__(self, int(rigol_vid, 16), int(rigol_pid, 16))
+        _Usbtmc.__init__(self, usbtmc_num)
 
-        self._channels = [_Rigol1054zChannel(c, self) for c in range(1,5)]
-        self.trigger = _Rigol1054zTrigger(self)
-        self.timebase = _Rigol1054zTimebase(self)
+        self._channels = [_Rigol2072aChannel(c, self) for c in range(1,3)]
+        self.trigger = _Rigol2072aTrigger(self)
+        self.timebase = _Rigol2072aTimebase(self)
 
     def __getitem__(self, i):
         assert 1 <= i <= 4, 'Not a valid channel.'
@@ -370,9 +375,10 @@ class Rigol1054z(_Usbtmc):
             assert pts in ('AUTO', 3000, 30000, 300000, 3000000, 6000000)
 
         self.run()
-
-        r = self._write(':acq:mdep %s' % pts)
-
+        if pts == 'AUTO':
+            r = self._write(':acq:mdep AUTO')
+        else:
+            r = self._write(':acq:mdep %s' % pts)
         return r
 
     def get_channels_enabled(self):
@@ -381,37 +387,12 @@ class Rigol1054z(_Usbtmc):
     def selected_channel(self):
         return self._ask(':MEAS:SOUR?')
 
-    def get_screenshot(self, filename, type='png'):
-        '''
-        Downloads a screenshot from the oscilloscope.
+    def get_screenshot(self, filename):
+        fn, _ = os.path.splitext(filename)
+        filename = fn + '.bmp'
 
-        Args:
-            filename (str): The name of the image file.  The appropriate
-                extension should be included (i.e. jpg, png, bmp or tif).
-            type (str): The format image that should be downloaded.  Options
-                are 'jpeg, 'png', 'bmp8', 'bmp24' and 'tiff'.  It appears that
-                'jpeg' takes <3sec to download while all the other formats take
-                <0.5sec.  Default is 'png'.
-
-        Returns:
-            list: Raw datastream containing the image data.
-        '''
-        self.file.timeout = 0
-        self._write(':disp:data? on,off,%s' % type)
-
-        assert type in ('jpeg', 'png', 'bmp8', 'bmp24', 'tiff')
-
-        if type == 'jpeg':
-            s = 3
-        elif type == 'png':
-            s = 0.5
-        elif type == 'bmp8':
-            s = 0.5
-        elif type == 'bmp24':
-            s = 0.5
-        elif type == 'tiff':
-            s = 0.5
-        time.sleep(s)
+        self._write(':disp:data?')
+        time.sleep(0.3)
         raw_img = self._read_raw(3850780)[11:-4]
 
         with open(filename, 'wb') as fs:
