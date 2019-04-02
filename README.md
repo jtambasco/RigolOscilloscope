@@ -5,7 +5,7 @@ Tested on Arch Linux and Linux Mint using a Rigol DS1054Z and Rigol DS2072A.
 
 ## Dependencies
 * [numpy](https://github.com/numpy/numpy)
-* [python-usbtmc](https://github.com/python-ivi/python-usbtmc)
+* [python-usbtmc](https://github.com/python-ivi/python-usbtmc) (only needed for Rigol DS1000z driver)
 * [tqdm](https://github.com/tqdm/tqdm)
 
 ## Example
